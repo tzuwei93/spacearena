@@ -1,0 +1,50 @@
+name: Build and Deploy WebGL
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: # Allows manual trigger from GitHub Android App or browser
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build WebGL 🎮
+    runs-on: ubuntu-latest
+    steps:
+      # 1. Checkout Repository
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      # 2. Cache Unity Library Folder to speed up subsequent builds
+      - name: Cache Library
+        uses: actions/cache@v4
+        with:
+          path: Library
+          key: Library-WebGL-${{ hashFiles('Assets/**', 'Packages/**', 'ProjectSettings/**') }}
+          restore-keys: |
+            Library-WebGL-
+
+      # 3. Compile Unity WebGL using GameCI
+      # Note: This requires setting up secrets.UNITY_LICENSE in your GitHub repo settings.
+      # You can obtain this file using the manual activation file (.alf) generated from Unity.
+      - name: Build WebGL
+        uses: game-ci/unity-builder@v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+        with:
+          targetPlatform: WebGL
+          projectPath: .
+          buildMethod: SpaceArenaBuild.BuildWebGL
+          unityVersion: 6000.5.0f1
+
+      # 4. Deploy the build output to GitHub Pages (gh-pages branch)
+      - name: Deploy to GitHub Pages 🚀
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          folder: Builds/WebGL
+          branch: gh-pages

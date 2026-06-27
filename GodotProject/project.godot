@@ -1,0 +1,6 @@
+; Engine configuration file.
+; It's best edited using the editor.
+config_version=5
+
+[application]
+config/name="spacearena-godot"

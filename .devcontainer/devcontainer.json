@@ -1,0 +1,15 @@
+{
+  "name": "Space Arena Unity Cloud Devcontainer",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "customizations": {
+    "vscode": {
+      "settings": {},
+      "extensions": [
+        "ms-dotnettools.csharp",
+        "visualstudioexptteam.vscodeintellicode"
+      ]
+    }
+  }
+}
