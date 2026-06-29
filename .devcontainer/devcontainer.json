@@ -3,12 +3,17 @@
   "build": {
     "dockerfile": "Dockerfile"
   },
+  "postCreateCommand": ".devcontainer/post-create.sh",
   "customizations": {
     "vscode": {
-      "settings": {},
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash"
+      },
       "extensions": [
         "ms-dotnettools.csharp",
-        "visualstudioexptteam.vscodeintellicode"
+        "visualstudioexptteam.vscodeintellicode",
+        "github.copilot",
+        "github.copilot-chat"
       ]
     }
   }
