@@ -4,23 +4,27 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch: # Allows manual trigger from GitHub Android App or browser
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
 
 jobs:
   build:
-    name: Build WebGL 🎮
+    name: Build WebGL
     runs-on: ubuntu-latest
     steps:
-      # 1. Checkout Repository
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           lfs: true
 
-      # 2. Cache Unity Library Folder to speed up subsequent builds
       - name: Cache Library
         uses: actions/cache@v4
         with:
@@ -29,9 +33,6 @@ jobs:
           restore-keys: |
             Library-WebGL-
 
-      # 3. Compile Unity WebGL using GameCI
-      # Note: This requires setting up secrets.UNITY_LICENSE in your GitHub repo settings.
-      # You can obtain this file using the manual activation file (.alf) generated from Unity.
       - name: Build WebGL
         uses: game-ci/unity-builder@v4
         env:
@@ -42,9 +43,22 @@ jobs:
           buildMethod: SpaceArenaBuild.BuildWebGL
           unityVersion: 6000.5.0f1
 
-      # 4. Deploy the build output to GitHub Pages (gh-pages branch)
-      - name: Deploy to GitHub Pages 🚀
-        uses: JamesIves/github-pages-deploy-action@v4
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          folder: Builds/WebGL
-          branch: gh-pages
+          path: Builds/WebGL
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy GitHub Pages site
+        id: deployment
+        uses: actions/deploy-pages@v4
