@@ -20,26 +20,32 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
     private const float CombatLaneY = 0f;
     private const float FirePoseHold = 0.72f;
     private const float AnimationFps = 4f;
-    private const float SkillPoseHold = 0.78f;
     private const float JumpDuration = 0.95f;
     private const float JumpHeight = 1.15f;
     private const float JumpCooldown = 0.45f;
     private const float EnemyJumpChancePerSecond = 0.18f;
     private const float LaneWallPadding = 0.75f;
     private const float BeamDuration = 0.12f;
+    private const float ProjectileTravelLimit = 8.8f;
+    private const float EyeLaserTravelLimit = 8.65f;
+    private const float PunchRange = MinFighterDistance * 1.25f;
+    private const string PrefBankedScrap = "spacearena.bankedScrap";
+    private const string PrefBestWave = "spacearena.bestWave";
+    private const string PrefWins = "spacearena.wins";
+    private const string PrefSelectedAlien = "spacearena.selectedAlien";
 
     private static SpaceArenaBootstrap instance;
     private static readonly Dictionary<string, Sprite> SpriteCache = new Dictionary<string, Sprite>();
     private static readonly Dictionary<string, Sprite[]> AnimationCache = new Dictionary<string, Sprite[]>();
     private static readonly AlienDefinition[] PlayerAliens =
     {
-        new AlienDefinition("green", "Green Striker", "Balanced starter"),
-        new AlienDefinition("blue", "Blue Volt", "Fast tempo"),
-        new AlienDefinition("red", "Red Raider", "Aggressive duelist"),
-        new AlienDefinition("armor", "Armor Guard", "Heavy defense"),
-        new AlienDefinition("gray", "Gray Comet", "Mobile fighter"),
-        new AlienDefinition("darkgray", "Darkgray Shade", "Steady shooter"),
-        new AlienDefinition("predator", "Predator Mask", "Long-range focus")
+        new AlienDefinition("green", "Green Striker", "Balanced starter", AlienSkillType.Gun, "GUN", "Rapid plasma shots", 0, "Plasma Swarm", "Fast fire / two shots"),
+        new AlienDefinition("blue", "Blue Volt", "Fast tempo", AlienSkillType.EyeLaser, "EYE LASER", "Long beam burst", 2, "Comet Riders", "High speed / dash burst"),
+        new AlienDefinition("red", "Red Raider", "Aggressive duelist", AlienSkillType.Punch, "PUNCH", "Close impact combo", 1, "Titan Lancers", "Heavy hit / armor break"),
+        new AlienDefinition("armor", "Armor Guard", "Heavy defense", AlienSkillType.Punch, "PUNCH", "Close armor smash", 1, "Titan Lancers", "High HP / armor break"),
+        new AlienDefinition("gray", "Gray Comet", "Mobile fighter", AlienSkillType.Gun, "GUN", "Mobile plasma shots", 2, "Comet Riders", "High speed / dash burst"),
+        new AlienDefinition("darkgray", "Darkgray Shade", "Steady shooter", AlienSkillType.EyeLaser, "EYE LASER", "Precise beam line", 0, "Plasma Swarm", "Fast fire / beam pressure"),
+        new AlienDefinition("predator", "Predator Mask", "Long-range focus", AlienSkillType.Gun, "GUN", "Focused long shots", 0, "Plasma Swarm", "Fast fire / long shots")
     };
     private static readonly Vector3[] RingUnitCircle = new Vector3[ArenaRingSegments];
     private static bool ringUnitCircleInitialized;
@@ -59,9 +65,6 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
     private readonly Stack<Projectile> projectilePool = new Stack<Projectile>();
     private readonly Stack<Beam> beamPool = new Stack<Beam>();
     private readonly List<LineRenderer> arenaRings = new List<LineRenderer>();
-    private readonly List<Button> alienButtons = new List<Button>();
-    private readonly List<Button> loadoutButtons = new List<Button>();
-    private readonly List<Button> attackModeButtons = new List<Button>();
 
     private Camera mainCamera;
     private Canvas canvas;
@@ -70,29 +73,46 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
     private Text feedText;
     private Text deckAlienNameText;
     private Text deckAlienRoleText;
+    private Text deckSkillText;
+    private Text deckInfoText;
+    private Text deckProgressText;
     private Image deckAlienPreview;
+    private Image deckPreviewEffect;
+    private Image deckPreviewImpact;
     private Image statusBanner;
+    private GameObject combatControlsPanel;
     private Button jumpButton;
     private Button turnButton;
     private GameObject deckPanel;
+    private GameObject deckInfoPanel;
     private GameObject augmentPanel;
+    private GameObject resultPanel;
+    private GameObject storePanel;
     private GameObject arenaRoot;
+    private IAdService adService;
 
-    private int selectedBuild;
     private int selectedAlienIndex;
-    private AttackMode selectedAttackMode = AttackMode.Projectile;
-    private AttackMode enemyAttackMode = AttackMode.Projectile;
     private int wave = 1;
     private int scrap;
     private int rerolls = 1;
     private int playerAugments;
+    private int bankedScrap;
+    private int bestWave;
+    private int wins;
+    private int runEarnedScrap;
     private float roundTimer;
     private float safeRadius;
     private float deckPreviewTimer;
+    private float deckPreviewFrameTimer;
     private int deckPreviewFrame;
+    private FighterPose deckPreviewPose = FighterPose.Idle;
     private bool matchRunning;
     private bool choosingAugment;
     private bool matchFinished;
+    private bool reviveUsedThisRun;
+    private bool freeAdRerollUsedThisChoice;
+    private bool dailyRunActive;
+    private bool runProgressCommitted;
     private System.Random rng;
     private EnemyWaveProfile currentWaveProfile;
     private string cachedStatusValue = string.Empty;
@@ -131,6 +151,8 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
 
         instance = this;
         DontDestroyOnLoad(gameObject);
+        adService = new MockAdService();
+        LoadProgress();
         rng = new System.Random(DateTime.UtcNow.Millisecond);
         Application.targetFrameRate = 60;
         BuildCamera();
@@ -143,7 +165,6 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
     {
         if (deckPanel != null && !matchRunning)
         {
-            HandleDeckInput();
             UpdateDeckPreview(Time.deltaTime);
         }
 
@@ -243,13 +264,15 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
         go.name = "Plasma Bolt";
         go.SetActive(true);
         go.transform.position = position;
-        go.transform.localScale = Vector3.one * radius;
+        go.transform.localScale = new Vector3(radius * 2.4f, radius * 0.78f, 1f);
+        float z = Mathf.Atan2(direction.y, direction.x) * Mathf.Rad2Deg;
+        go.transform.rotation = Quaternion.Euler(0f, 0f, z);
 
         SpriteRenderer renderer = projectile.Renderer;
         renderer.sprite = GetCircleSprite();
         renderer.color = color;
         renderer.sortingOrder = 6;
-        projectile.Init(team, direction, damage, speed, StartSafeRadius - LaneWallPadding);
+        projectile.Init(team, direction, damage, speed, ProjectileTravelLimit);
         projectiles.Add(projectile);
         return projectile;
     }
@@ -259,9 +282,10 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
         Beam beam = beamPool.Count > 0 ? beamPool.Pop() : CreateBeam();
         beam.gameObject.SetActive(true);
 
-        float wallX = facingSign > 0 ? StartSafeRadius - LaneWallPadding : -StartSafeRadius + LaneWallPadding;
-        Vector3 end = new Vector3(wallX, position.y, position.z);
-        beam.Init(position + new Vector3(facingSign * 0.28f, 0.24f, 0f), end, color, BeamDuration);
+        Vector3 start = position;
+        float wallX = facingSign > 0 ? EyeLaserTravelLimit : -EyeLaserTravelLimit;
+        Vector3 end = new Vector3(wallX, start.y, start.z);
+        beam.Init(start, end, color, BeamDuration * 1.8f);
         beams.Add(beam);
 
         Fighter hitTarget = null;
@@ -274,13 +298,13 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
                 continue;
             }
 
-            float offset = fighter.transform.position.x - position.x;
+            float offset = fighter.transform.position.x - start.x;
             if (Mathf.Sign(offset) != facingSign)
             {
                 continue;
             }
 
-            float verticalDelta = Mathf.Abs(fighter.transform.position.y - position.y);
+            float verticalDelta = Mathf.Abs(fighter.transform.position.y - start.y);
             float distance = Mathf.Abs(offset);
             if (verticalDelta <= 0.85f && distance < bestDistance)
             {
@@ -295,13 +319,23 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
         }
     }
 
+    internal void SpawnImpactFlash(Vector3 position, Color color)
+    {
+        Beam beam = beamPool.Count > 0 ? beamPool.Pop() : CreateBeam();
+        beam.gameObject.SetActive(true);
+        Vector3 start = position + new Vector3(-0.32f, 0.24f, 0f);
+        Vector3 end = position + new Vector3(0.32f, 0.24f, 0f);
+        beam.Init(start, end, color, BeamDuration * 1.25f);
+        beams.Add(beam);
+    }
+
     private void BuildCamera()
     {
         GameObject cameraObject = new GameObject("Main Camera");
         cameraObject.tag = "MainCamera";
         mainCamera = cameraObject.AddComponent<Camera>();
         mainCamera.orthographic = true;
-        mainCamera.orthographicSize = 6.25f;
+        mainCamera.orthographicSize = 8.45f;
         mainCamera.clearFlags = CameraClearFlags.SolidColor;
         mainCamera.backgroundColor = new Color(0.015f, 0.02f, 0.05f);
         cameraObject.transform.position = new Vector3(0f, 0f, -10f);
@@ -333,20 +367,29 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
         GameObject canvasObject = new GameObject("HUD");
         canvas = canvasObject.AddComponent<Canvas>();
         canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-        canvasObject.AddComponent<CanvasScaler>().uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+        CanvasScaler scaler = canvasObject.AddComponent<CanvasScaler>();
+        scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+        scaler.referenceResolution = new Vector2(390f, 844f);
+        scaler.matchWidthOrHeight = 0.65f;
         canvasObject.AddComponent<GraphicRaycaster>();
 
-        GameObject bannerObject = AddPanel("Combat Banner", canvas.transform, new Vector2(0.5f, 1f), new Vector2(760f, 66f));
+        GameObject bannerObject = AddPanel("Combat Banner", canvas.transform, new Vector2(0.5f, 1f), new Vector2(354f, 58f));
         statusBanner = bannerObject.GetComponent<Image>();
-        statusBanner.color = new Color(0.02f, 0.035f, 0.08f, 0.86f);
-        bannerObject.GetComponent<RectTransform>().anchoredPosition = new Vector2(0f, -10f);
-        statusText = AddText("Status", bannerObject.transform, Vector2.zero, Vector2.one, Vector2.zero, 18, TextAnchor.MiddleCenter);
-        statusText.GetComponent<RectTransform>().sizeDelta = new Vector2(-24f, -8f);
-        resourceText = AddText("Resources", canvas.transform, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(18f, -18f), 16, TextAnchor.UpperLeft);
-        feedText = AddText("Feed", canvas.transform, new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0f, 22f), 17, TextAnchor.LowerCenter);
-        turnButton = AddButton("Turn", canvas.transform, new Vector2(1f, 0f), new Vector2(106f, 46f), new Vector2(-150f, 24f), RequestPlayerTurn);
+        statusBanner.color = new Color(0.025f, 0.045f, 0.075f, 0.9f);
+        bannerObject.GetComponent<RectTransform>().anchoredPosition = new Vector2(0f, -28f);
+        statusText = AddText("Status", bannerObject.transform, Vector2.zero, Vector2.one, Vector2.zero, 15, TextAnchor.MiddleCenter);
+        statusText.GetComponent<RectTransform>().sizeDelta = new Vector2(-18f, -8f);
+        resourceText = AddText("Resources", canvas.transform, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(18f, -88f), 14, TextAnchor.UpperLeft);
+        resourceText.GetComponent<RectTransform>().sizeDelta = new Vector2(150f, 52f);
+        feedText = AddText("Feed", canvas.transform, new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0f, 168f), 14, TextAnchor.LowerCenter);
+        feedText.GetComponent<RectTransform>().sizeDelta = new Vector2(330f, 44f);
+        combatControlsPanel = AddPanel("Combat Controls", canvas.transform, new Vector2(1f, 0f), new Vector2(104f, 166f));
+        combatControlsPanel.GetComponent<RectTransform>().anchoredPosition = new Vector2(-14f, 48f);
+        combatControlsPanel.GetComponent<Image>().color = new Color(0.018f, 0.03f, 0.052f, 0.78f);
+        combatControlsPanel.SetActive(false);
+        turnButton = AddButton("Turn", combatControlsPanel.transform, new Vector2(0.5f, 1f), new Vector2(78f, 64f), new Vector2(0f, -18f), RequestPlayerTurn);
         turnButton.gameObject.SetActive(false);
-        jumpButton = AddButton("Jump", canvas.transform, new Vector2(1f, 0f), new Vector2(116f, 46f), new Vector2(-24f, 24f), RequestPlayerJump);
+        jumpButton = AddButton("Jump", combatControlsPanel.transform, new Vector2(0.5f, 0f), new Vector2(78f, 64f), new Vector2(0f, 18f), RequestPlayerJump);
         jumpButton.gameObject.SetActive(false);
     }
 
@@ -370,79 +413,50 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
         currentWaveProfile = null;
         SetJumpButtonVisible(false);
         ClearCombat();
-        alienButtons.Clear();
-        loadoutButtons.Clear();
-        attackModeButtons.Clear();
         if (deckPanel != null)
         {
             Destroy(deckPanel);
         }
+        if (storePanel != null)
+        {
+            Destroy(storePanel);
+        }
+        if (resultPanel != null)
+        {
+            Destroy(resultPanel);
+        }
 
-        deckPanel = AddPanel("Deck Builder", canvas.transform, new Vector2(0.5f, 0.5f), new Vector2(820f, 500f));
-        AddText("Title", deckPanel.transform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -28f), 28, TextAnchor.UpperCenter, "SPACE ARENA");
-        AddText("Subtitle", deckPanel.transform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -68f), 15, TextAnchor.UpperCenter, "Build your duelist, then enter the arena.");
+        deckPanel = AddPanel("Deck Builder", canvas.transform, new Vector2(0.5f, 0.5f), new Vector2(356f, 720f));
+        deckPanel.GetComponent<Image>().color = new Color(0.022f, 0.032f, 0.055f, 0.96f);
+        Text titleText = AddText("Title", deckPanel.transform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -16f), 28, TextAnchor.UpperCenter, "SPACE ARENA");
+        titleText.GetComponent<RectTransform>().sizeDelta = new Vector2(326f, 36f);
+        deckProgressText = AddText("Progress", deckPanel.transform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -54f), 12, TextAnchor.UpperCenter);
+        deckProgressText.GetComponent<RectTransform>().sizeDelta = new Vector2(320f, 24f);
 
-        AddText("CombatStyleTitle", deckPanel.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-250f, 126f), 16, TextAnchor.MiddleLeft, "Combat Style");
-        AddLoadoutButton("Plasma Swarm", "Fast fire", 0, 80f);
-        AddLoadoutButton("Titan Lancers", "Armor break", 1, 30f);
-        AddLoadoutButton("Comet Riders", "Dash burst", 2, -20f);
-        AddText("AttackModeTitle", deckPanel.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-250f, -72f), 16, TextAnchor.MiddleLeft, "Attack Mode");
-        AddAttackModeButton("Bullets", "Wall range", AttackMode.Projectile, -102f);
-        AddAttackModeButton("Eye Laser", "Instant beam", AttackMode.EyeLaser, -152f);
-
-        AddText("AlienTitle", deckPanel.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(190f, 126f), 16, TextAnchor.MiddleCenter, "Alien");
+        Text previewTitle = AddText("AlienTitle", deckPanel.transform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -86f), 14, TextAnchor.UpperCenter, "SKILL PREVIEW");
+        previewTitle.GetComponent<RectTransform>().sizeDelta = new Vector2(326f, 22f);
         CreateAlienPreview();
-        AddButton("<", deckPanel.transform, new Vector2(0.5f, 0.5f), new Vector2(42f, 42f), new Vector2(26f, 28f), () => ChangeSelectedAlien(-1));
-        AddButton(">", deckPanel.transform, new Vector2(0.5f, 0.5f), new Vector2(42f, 42f), new Vector2(354f, 28f), () => ChangeSelectedAlien(1));
-        AddButton("Start Match", deckPanel.transform, new Vector2(0.5f, 0f), new Vector2(190f, 42f), new Vector2(248f, 34f), StartMatch);
-        selectedBuild = 0;
+        AddButton("<", deckPanel.transform, new Vector2(0.5f, 1f), new Vector2(58f, 58f), new Vector2(-134f, -202f), () => ChangeSelectedAlien(-1));
+        AddButton(">", deckPanel.transform, new Vector2(0.5f, 1f), new Vector2(58f, 58f), new Vector2(134f, -202f), () => ChangeSelectedAlien(1));
+
+        AddButton("ALIEN", deckPanel.transform, new Vector2(0.5f, 1f), new Vector2(156f, 42f), new Vector2(-85f, -374f), () => ShowDeckInfoTab(false));
+        AddButton("INFO", deckPanel.transform, new Vector2(0.5f, 1f), new Vector2(156f, 42f), new Vector2(85f, -374f), () => ShowDeckInfoTab(true));
+        deckInfoPanel = AddPanel("Alien Info", deckPanel.transform, new Vector2(0.5f, 1f), new Vector2(326f, 158f));
+        deckInfoPanel.GetComponent<RectTransform>().anchoredPosition = new Vector2(0f, -470f);
+        deckInfoPanel.GetComponent<Image>().color = new Color(0.012f, 0.022f, 0.04f, 0.94f);
+        deckInfoText = AddText("Alien Info Text", deckInfoPanel.transform, Vector2.zero, Vector2.one, Vector2.zero, 14, TextAnchor.MiddleCenter);
+        deckInfoText.GetComponent<RectTransform>().sizeDelta = new Vector2(-22f, -18f);
+
+        AddButton("Daily Run", deckPanel.transform, new Vector2(0.5f, 0f), new Vector2(156f, 46f), new Vector2(-85f, 106f), StartDailyRun);
+        AddButton("Shop", deckPanel.transform, new Vector2(0.5f, 0f), new Vector2(156f, 46f), new Vector2(85f, 106f), ShowStore);
+        AddButton("START MATCH", deckPanel.transform, new Vector2(0.5f, 0f), new Vector2(326f, 58f), new Vector2(0f, 40f), StartMatch);
         selectedAlienIndex = Mathf.Clamp(selectedAlienIndex, 0, PlayerAliens.Length - 1);
-        RefreshLoadoutSelection();
-        RefreshAttackModeSelection();
         RefreshAlienSelection();
+        ShowDeckInfoTab(false);
+        RefreshDeckProgress();
         statusText.text = string.Empty;
         resourceText.text = string.Empty;
-        feedText.text = "Crazy Arena-inspired auto-battle prototype";
-    }
-
-    private void AddLoadoutButton(string title, string body, int buildIndex, float y)
-    {
-        Button button = AddButton(title + "\n" + body, deckPanel.transform, new Vector2(0.5f, 0.5f), new Vector2(260f, 42f), new Vector2(-250f, y), () =>
-        {
-            selectedBuild = buildIndex;
-            RefreshLoadoutSelection();
-            feedText.text = "Selected: " + title;
-        });
-        loadoutButtons.Add(button);
-    }
-
-    private void AddAttackModeButton(string title, string body, AttackMode mode, float y)
-    {
-        Button button = AddButton(title + "\n" + body, deckPanel.transform, new Vector2(0.5f, 0.5f), new Vector2(260f, 42f), new Vector2(-250f, y), () =>
-        {
-            selectedAttackMode = mode;
-            RefreshAttackModeSelection();
-            feedText.text = "Attack mode: " + GetAttackModeLabel(mode);
-        });
-        attackModeButtons.Add(button);
-    }
-
-    private void AddAlienSelectorButtons()
-    {
-        alienButtons.Clear();
-        for (int i = 0; i < PlayerAliens.Length; i++)
-        {
-            int index = i;
-            AlienDefinition alien = PlayerAliens[i];
-            float x = -300f + (i % 4) * 200f;
-            float y = i < 4 ? -122f : -176f;
-            Button button = AddButton(alien.Name + "\n" + alien.Role, deckPanel.transform, new Vector2(0.5f, 0.5f), new Vector2(178f, 46f), new Vector2(x, y), () =>
-            {
-                selectedAlienIndex = index;
-                RefreshAlienSelection();
-            });
-            alienButtons.Add(button);
-        }
+        feedText.text = "Mobile WebGL MVP";
     }
 
     private void CreateAlienPreview()
@@ -453,62 +467,46 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
         deckAlienPreview.preserveAspect = true;
         deckAlienPreview.color = Color.white;
         RectTransform previewRect = deckAlienPreview.GetComponent<RectTransform>();
-        previewRect.anchorMin = new Vector2(0.5f, 0.5f);
-        previewRect.anchorMax = new Vector2(0.5f, 0.5f);
+        previewRect.anchorMin = new Vector2(0.5f, 1f);
+        previewRect.anchorMax = new Vector2(0.5f, 1f);
         previewRect.pivot = new Vector2(0.5f, 0.5f);
-        previewRect.sizeDelta = new Vector2(230f, 230f);
-        previewRect.anchoredPosition = new Vector2(190f, 24f);
+        previewRect.sizeDelta = new Vector2(210f, 210f);
+        previewRect.anchoredPosition = new Vector2(0f, -194f);
 
-        deckAlienNameText = AddText("Alien Name", deckPanel.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(190f, -116f), 21, TextAnchor.MiddleCenter);
-        deckAlienNameText.GetComponent<RectTransform>().sizeDelta = new Vector2(300f, 34f);
-        deckAlienRoleText = AddText("Alien Role", deckPanel.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(190f, -150f), 15, TextAnchor.MiddleCenter);
-        deckAlienRoleText.GetComponent<RectTransform>().sizeDelta = new Vector2(300f, 34f);
+        deckPreviewEffect = AddPreviewImage("Preview Skill VFX", new Vector2(102f, -194f), new Vector2(128f, 16f));
+        deckPreviewImpact = AddPreviewImage("Preview Impact VFX", new Vector2(66f, -186f), new Vector2(46f, 46f));
+
+        deckAlienNameText = AddText("Alien Name", deckPanel.transform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -292f), 20, TextAnchor.UpperCenter);
+        deckAlienNameText.GetComponent<RectTransform>().sizeDelta = new Vector2(320f, 30f);
+        deckSkillText = AddText("Alien Skill", deckPanel.transform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -320f), 14, TextAnchor.UpperCenter);
+        deckSkillText.GetComponent<RectTransform>().sizeDelta = new Vector2(320f, 24f);
+        deckAlienRoleText = AddText("Alien Role", deckPanel.transform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -338f), 12, TextAnchor.UpperCenter);
+        deckAlienRoleText.GetComponent<RectTransform>().sizeDelta = new Vector2(320f, 20f);
     }
 
-    private void RefreshLoadoutSelection()
+    private Image AddPreviewImage(string name, Vector2 position, Vector2 size)
     {
-        for (int i = 0; i < loadoutButtons.Count; i++)
-        {
-            Image image = loadoutButtons[i].GetComponent<Image>();
-            if (image != null)
-            {
-                image.color = i == selectedBuild ? new Color(0.08f, 0.5f, 0.64f, 0.98f) : new Color(0.055f, 0.11f, 0.18f, 0.96f);
-            }
-        }
-    }
-
-    private void RefreshAttackModeSelection()
-    {
-        for (int i = 0; i < attackModeButtons.Count; i++)
-        {
-            Image image = attackModeButtons[i].GetComponent<Image>();
-            if (image != null)
-            {
-                AttackMode mode = i == 0 ? AttackMode.Projectile : AttackMode.EyeLaser;
-                image.color = mode == selectedAttackMode ? new Color(0.08f, 0.5f, 0.64f, 0.98f) : new Color(0.055f, 0.11f, 0.18f, 0.96f);
-            }
-        }
-    }
-
-    private static string GetAttackModeLabel(AttackMode mode)
-    {
-        return mode == AttackMode.EyeLaser ? "Eye Laser" : "Bullets";
+        GameObject go = new GameObject(name);
+        go.transform.SetParent(deckPanel.transform, false);
+        Image image = go.AddComponent<Image>();
+        image.sprite = GetCircleSprite();
+        image.color = Color.clear;
+        RectTransform rect = image.GetComponent<RectTransform>();
+        rect.anchorMin = new Vector2(0.5f, 1f);
+        rect.anchorMax = new Vector2(0.5f, 1f);
+        rect.pivot = new Vector2(0.5f, 0.5f);
+        rect.anchoredPosition = position;
+        rect.sizeDelta = size;
+        return image;
     }
 
     private void RefreshAlienSelection()
     {
-        for (int i = 0; i < alienButtons.Count; i++)
-        {
-            Image image = alienButtons[i].GetComponent<Image>();
-            if (image != null)
-            {
-                image.color = i == selectedAlienIndex ? new Color(0.05f, 0.58f, 0.78f, 0.98f) : new Color(0.1f, 0.28f, 0.42f, 0.96f);
-            }
-        }
-
         AlienDefinition alien = PlayerAliens[Mathf.Clamp(selectedAlienIndex, 0, PlayerAliens.Length - 1)];
         deckPreviewTimer = 0f;
+        deckPreviewFrameTimer = 0f;
         deckPreviewFrame = 0;
+        deckPreviewPose = FighterPose.Idle;
         if (deckAlienNameText != null)
         {
             deckAlienNameText.text = alien.Name;
@@ -517,27 +515,34 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
         {
             deckAlienRoleText.text = alien.Role;
         }
+        if (deckSkillText != null)
+        {
+            deckSkillText.text = alien.SkillLabel + "  -  " + alien.SkillDescription;
+        }
+        if (deckInfoText != null)
+        {
+            deckInfoText.text = "BOUND TEAM\n" + alien.BuildLabel + "\n" + alien.BuildDescription + "\n\nSKILL\n" + alien.SkillLabel + " - " + alien.SkillDescription;
+        }
         UpdateDeckPreview(0f);
         feedText.text = "Selected alien: " + alien.Name;
+    }
+
+    private void ShowDeckInfoTab(bool showInfo)
+    {
+        if (deckInfoPanel != null)
+        {
+            deckInfoPanel.SetActive(showInfo);
+        }
+        if (feedText != null)
+        {
+            feedText.text = showInfo ? "Alien team is fixed by character." : "Alien skill preview.";
+        }
     }
 
     private void ChangeSelectedAlien(int direction)
     {
         selectedAlienIndex = (selectedAlienIndex + direction + PlayerAliens.Length) % PlayerAliens.Length;
         RefreshAlienSelection();
-    }
-
-    private void HandleDeckInput()
-    {
-        float scroll = Input.mouseScrollDelta.y;
-        if (scroll > 0.05f)
-        {
-            ChangeSelectedAlien(-1);
-        }
-        else if (scroll < -0.05f)
-        {
-            ChangeSelectedAlien(1);
-        }
     }
 
     private void UpdateDeckPreview(float dt)
@@ -548,36 +553,116 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
         }
 
         AlienDefinition alien = PlayerAliens[Mathf.Clamp(selectedAlienIndex, 0, PlayerAliens.Length - 1)];
-        Sprite[] frames = LoadAlienAnimation(alien.Skin, FighterPose.Fire);
+        deckPreviewTimer += dt;
+        deckPreviewFrameTimer += dt;
+        float cycle = Mathf.Repeat(deckPreviewTimer, 2.45f);
+        FighterPose pose = cycle < 0.8f ? FighterPose.Idle : alien.SkillType == AlienSkillType.Punch ? FighterPose.Punch : FighterPose.Fire;
+        if (pose != deckPreviewPose)
+        {
+            deckPreviewPose = pose;
+            deckPreviewFrame = 0;
+            deckPreviewFrameTimer = 0f;
+        }
+
+        Sprite[] frames = LoadAlienAnimation(alien.Skin, pose);
         if (frames.Length == 0)
         {
             return;
         }
 
-        deckPreviewTimer += dt;
         float frameDuration = 1f / Mathf.Max(1f, AnimationFps);
-        while (deckPreviewTimer >= frameDuration)
+        while (deckPreviewFrameTimer >= frameDuration)
         {
-            deckPreviewTimer -= frameDuration;
+            deckPreviewFrameTimer -= frameDuration;
             deckPreviewFrame = (deckPreviewFrame + 1) % frames.Length;
         }
 
         deckAlienPreview.sprite = frames[Mathf.Clamp(deckPreviewFrame, 0, frames.Length - 1)];
+        UpdateDeckPreviewVfx(alien, cycle);
+    }
+
+    private void UpdateDeckPreviewVfx(AlienDefinition alien, float cycle)
+    {
+        if (deckPreviewEffect == null || deckPreviewImpact == null)
+        {
+            return;
+        }
+
+        deckPreviewEffect.color = Color.clear;
+        deckPreviewImpact.color = Color.clear;
+        if (cycle < 0.95f || cycle > 1.85f)
+        {
+            return;
+        }
+
+        float t = Mathf.InverseLerp(0.95f, 1.85f, cycle);
+        RectTransform effectRect = deckPreviewEffect.GetComponent<RectTransform>();
+        RectTransform impactRect = deckPreviewImpact.GetComponent<RectTransform>();
+        if (alien.SkillType == AlienSkillType.Gun)
+        {
+            effectRect.sizeDelta = new Vector2(24f, 10f);
+            effectRect.anchoredPosition = new Vector2(Mathf.Lerp(46f, 126f, t), -194f);
+            deckPreviewEffect.sprite = GetCircleSprite();
+            deckPreviewEffect.color = new Color(0.35f, 1f, 0.95f, 1f - t * 0.25f);
+            impactRect.sizeDelta = new Vector2(92f, 7f);
+            impactRect.anchoredPosition = new Vector2(Mathf.Lerp(52f, 100f, t), -194f);
+            deckPreviewImpact.color = new Color(0.25f, 0.9f, 1f, 0.2f * (1f - t));
+        }
+        else if (alien.SkillType == AlienSkillType.EyeLaser)
+        {
+            effectRect.sizeDelta = new Vector2(138f, 10f);
+            effectRect.anchoredPosition = new Vector2(78f, -186f);
+            deckPreviewEffect.sprite = GetCircleSprite();
+            deckPreviewEffect.color = new Color(1f, 0.2f, 0.34f, 0.85f * (1f - Mathf.Abs(t - 0.35f) * 0.8f));
+        }
+        else
+        {
+            float pulse = Mathf.Sin(t * Mathf.PI);
+            impactRect.sizeDelta = Vector2.one * Mathf.Lerp(32f, 62f, pulse);
+            impactRect.anchoredPosition = new Vector2(52f, -190f);
+            deckPreviewImpact.sprite = GetCircleSprite();
+            deckPreviewImpact.color = new Color(1f, 0.74f, 0.24f, 0.8f * pulse);
+        }
     }
 
     private void StartMatch()
+    {
+        StartRun(false);
+    }
+
+    private void StartDailyRun()
+    {
+        StartRun(true);
+    }
+
+    private void StartRun(bool dailyRun)
     {
         if (deckPanel != null)
         {
             Destroy(deckPanel);
         }
+        if (storePanel != null)
+        {
+            Destroy(storePanel);
+        }
 
+        dailyRunActive = dailyRun;
         wave = 1;
         scrap = 0;
+        runEarnedScrap = 0;
         rerolls = 1;
         playerAugments = 0;
-        playerStats = TeamStats.ForBuild(selectedBuild);
+        reviveUsedThisRun = false;
+        freeAdRerollUsedThisChoice = false;
+        runProgressCommitted = false;
+        selectedAlienIndex = Mathf.Clamp(selectedAlienIndex, 0, PlayerAliens.Length - 1);
+        PlayerPrefs.SetInt(PrefSelectedAlien, selectedAlienIndex);
+        PlayerPrefs.Save();
+        rng = dailyRun ? new System.Random(GetDailySeed()) : new System.Random(DateTime.UtcNow.Millisecond ^ Environment.TickCount);
+        AlienDefinition selectedAlien = PlayerAliens[selectedAlienIndex];
+        playerStats = TeamStats.ForBuild(selectedAlien.BuildIndex);
         enemyStats = TeamStats.EnemyBaseline();
+        feedText.text = dailyRun ? "Daily Run seeded for today." : "Match started.";
         BeginWave();
     }
 
@@ -591,16 +676,17 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
         matchRunning = true;
         matchFinished = false;
         currentWaveProfile = BuildEnemyWaveProfile();
-        enemyAttackMode = rng.Next(2) == 0 ? AttackMode.Projectile : AttackMode.EyeLaser;
 
-        SpawnDuelist(0, playerStats, -DuelSpawnX, GetPlayerDuelistSkin(), selectedAttackMode);
-        SpawnDuelist(1, currentWaveProfile.TeamStats, DuelSpawnX, GetEnemyDuelistSkin(), enemyAttackMode, GetEnemyDuelistName());
+        string playerSkin = GetPlayerDuelistSkin();
+        string enemySkin = GetEnemyDuelistSkin();
+        SpawnDuelist(0, playerStats, -DuelSpawnX, playerSkin, GetSkillForSkin(playerSkin));
+        SpawnDuelist(1, currentWaveProfile.TeamStats, DuelSpawnX, enemySkin, GetSkillForSkin(enemySkin), GetEnemyDuelistName());
         SetJumpButtonVisible(true);
-        feedText.text = currentWaveProfile.IntroText + " Enemy uses " + GetAttackModeLabel(enemyAttackMode) + ".";
+        feedText.text = currentWaveProfile.IntroText;
         UpdateStatus();
     }
 
-    private void SpawnDuelist(int team, TeamStats stats, float x, string skin, AttackMode attackMode, string displayName = null)
+    private void SpawnDuelist(int team, TeamStats stats, float x, string skin, AlienSkillType skillType, string displayName = null)
     {
         TeamStats fighterStats = stats;
         if (team == 1 && currentWaveProfile != null && currentWaveProfile.IsBossWave)
@@ -608,7 +694,7 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
             fighterStats = stats.AsBoss(currentWaveProfile.BossName);
         }
 
-        Fighter fighter = CreateFighter(team, skin, new Vector3(x, 0f, 0f), fighterStats, 0, attackMode, displayName);
+        Fighter fighter = CreateFighter(team, skin, new Vector3(x, 0f, 0f), fighterStats, 0, skillType, displayName);
         fighters.Add(fighter);
     }
 
@@ -633,7 +719,33 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
         return currentWaveProfile != null && currentWaveProfile.IsBossWave ? currentWaveProfile.BossName : null;
     }
 
-    private Fighter CreateFighter(int team, string skin, Vector3 position, TeamStats stats, int slot, AttackMode attackMode, string displayName = null)
+    private static AlienSkillType GetSkillForSkin(string skin)
+    {
+        for (int i = 0; i < PlayerAliens.Length; i++)
+        {
+            if (PlayerAliens[i].Skin == skin)
+            {
+                return PlayerAliens[i].SkillType;
+            }
+        }
+
+        return AlienSkillType.Gun;
+    }
+
+    private static string GetSkillResultLabel(AlienSkillType skillType)
+    {
+        if (skillType == AlienSkillType.EyeLaser)
+        {
+            return "Laser beam";
+        }
+        if (skillType == AlienSkillType.Punch)
+        {
+            return "Close punch";
+        }
+        return "Plasma gun";
+    }
+
+    private Fighter CreateFighter(int team, string skin, Vector3 position, TeamStats stats, int slot, AlienSkillType skillType, string displayName = null)
     {
         Fighter fighter;
         SpriteRenderer renderer;
@@ -659,15 +771,16 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
         go.transform.localScale = Vector3.one * stats.VisualScale;
         renderer.color = stats.SpriteTint;
 
-        fighter.Init(this, team, skin, stats, slot, attackMode);
+        fighter.Init(this, team, skin, stats, slot, skillType);
         return fighter;
     }
 
-    private void BeginAugmentChoice()
+    private void BeginAugmentChoice(bool adRerollAvailable = true)
     {
         choosingAugment = true;
         matchRunning = false;
         currentWaveProfile = null;
+        freeAdRerollUsedThisChoice = !adRerollAvailable;
         SetJumpButtonVisible(false);
         ClearCombat();
 
@@ -676,15 +789,16 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
             Destroy(augmentPanel);
         }
 
-        augmentPanel = AddPanel("Augments", canvas.transform, new Vector2(0.5f, 0.5f), new Vector2(720f, 360f));
-        AddText("AugmentTitle", augmentPanel.transform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -26f), 24, TextAnchor.UpperCenter, "Choose a mutation");
+        augmentPanel = AddPanel("Augments", canvas.transform, new Vector2(0.5f, 0.5f), new Vector2(356f, 620f));
+        Text augmentTitle = AddText("AugmentTitle", augmentPanel.transform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -28f), 24, TextAnchor.UpperCenter, "Choose mutation");
+        augmentTitle.GetComponent<RectTransform>().sizeDelta = new Vector2(312f, 34f);
 
         List<AugmentOption> choices = RollAugments();
         for (int i = 0; i < choices.Count; i++)
         {
             AugmentOption option = choices[i];
-            float x = -230f + i * 230f;
-            AddButton(option.Title + "\n" + option.Description, augmentPanel.transform, new Vector2(0.5f, 0.5f), new Vector2(205f, 146f), new Vector2(x, 14f), () =>
+            float y = -112f - i * 126f;
+            AddButton(option.Title + "\n" + option.Description, augmentPanel.transform, new Vector2(0.5f, 1f), new Vector2(312f, 104f), new Vector2(0f, y), () =>
             {
                 option.Apply(playerStats);
                 playerAugments++;
@@ -694,8 +808,27 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
             });
         }
 
-        Button rerollButton = AddButton("Reroll (" + rerolls + ")", augmentPanel.transform, new Vector2(0.5f, 0f), new Vector2(160f, 42f), new Vector2(-90f, 32f), () =>
+        bool canUseAdReroll = adService != null && adService.CanShowRewardedAd && !freeAdRerollUsedThisChoice;
+        string rerollLabel = canUseAdReroll ? "Ad Reroll" : "Reroll (" + rerolls + ")";
+        Button rerollButton = AddButton(rerollLabel, augmentPanel.transform, new Vector2(0.5f, 0f), new Vector2(148f, 52f), new Vector2(-82f, 38f), () =>
         {
+            if (adService != null && adService.CanShowRewardedAd && !freeAdRerollUsedThisChoice)
+            {
+                freeAdRerollUsedThisChoice = true;
+                adService.ShowRewardedAd(success =>
+                {
+                    if (!success)
+                    {
+                        feedText.text = "Ad was not completed.";
+                        return;
+                    }
+
+                    Destroy(augmentPanel);
+                    BeginAugmentChoice(false);
+                });
+                return;
+            }
+
             if (rerolls <= 0 && scrap < 10)
             {
                 feedText.text = "Need 10 scrap for another reroll.";
@@ -712,8 +845,8 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
             Destroy(augmentPanel);
             BeginAugmentChoice();
         });
-        rerollButton.interactable = rerolls > 0 || scrap >= 10;
-        AddButton("Hold Formation", augmentPanel.transform, new Vector2(0.5f, 0f), new Vector2(180f, 42f), new Vector2(110f, 32f), () =>
+        rerollButton.interactable = canUseAdReroll || rerolls > 0 || scrap >= 10;
+        AddButton("Hold", augmentPanel.transform, new Vector2(0.5f, 0f), new Vector2(148f, 52f), new Vector2(82f, 38f), () =>
         {
             playerStats.MaxHealth += 8f;
             playerStats.HealOnWave += 2f;
@@ -728,14 +861,14 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
     {
         List<AugmentOption> pool = new List<AugmentOption>
         {
-            new AugmentOption("Twin Comets", "Projectile count +1\nDamage -10%", s => { s.ProjectileCount += 1; s.Damage *= 0.9f; }),
-            new AugmentOption("Overclock Core", "Fire rate +26%\nHeat damage +8%", s => { s.FireRate *= 1.26f; s.Damage *= 1.08f; }),
-            new AugmentOption("Ion Lances", "Range +20%\nProjectile speed +15%", s => { s.Range *= 1.2f; s.ProjectileSpeed *= 1.15f; }),
-            new AugmentOption("Aegis Hull", "Max health +28\nArmor +2", s => { s.MaxHealth += 28f; s.Armor += 2f; }),
-            new AugmentOption("Rider Spurs", "Move speed +18%\nCharge lasts longer", s => { s.MoveSpeed *= 1.18f; s.ChargeDuration += 0.7f; }),
-            new AugmentOption("Vampire Battery", "Heal after each hit\nLower max health", s => { s.LifeSteal += 0.18f; s.MaxHealth -= 8f; }),
-            new AugmentOption("Singularity Rounds", "Damage +32%\nFire rate -12%", s => { s.Damage *= 1.32f; s.FireRate *= 0.88f; }),
-            new AugmentOption("Emergency Clones", "Add squad endurance", s => { s.MaxHealth += 16f; s.HealOnWave += 9f; })
+            new AugmentOption("Multi Shot", "+1 bullet\n-10% damage", s => { s.ProjectileCount += 1; s.Damage *= 0.9f; }),
+            new AugmentOption("Attack Speed", "+26% fire rate\n+8% damage", s => { s.FireRate *= 1.26f; s.Damage *= 1.08f; }),
+            new AugmentOption("Long Shot", "+20% range\n+15% shot speed", s => { s.Range *= 1.2f; s.ProjectileSpeed *= 1.15f; }),
+            new AugmentOption("More HP", "+28 health\n+2 armor", s => { s.MaxHealth += 28f; s.Armor += 2f; }),
+            new AugmentOption("Faster Move", "+18% speed\nLonger charge", s => { s.MoveSpeed *= 1.18f; s.ChargeDuration += 0.7f; }),
+            new AugmentOption("Life Steal", "Heal on hit\n-8 max HP", s => { s.LifeSteal += 0.18f; s.MaxHealth -= 8f; }),
+            new AugmentOption("Big Damage", "+32% damage\n-12% fire rate", s => { s.Damage *= 1.32f; s.FireRate *= 0.88f; }),
+            new AugmentOption("Wave Heal", "+16 health\nHeal each wave", s => { s.MaxHealth += 16f; s.HealOnWave += 9f; })
         };
 
         List<AugmentOption> result = new List<AugmentOption>();
@@ -764,7 +897,9 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
 
     private void HandleWaveWin(string prefix)
     {
-        scrap += currentWaveProfile != null ? currentWaveProfile.ScrapReward : 12 + wave * 4;
+        int reward = currentWaveProfile != null ? currentWaveProfile.ScrapReward : 12 + wave * 4;
+        scrap += reward;
+        runEarnedScrap += reward;
         if (currentWaveProfile != null && currentWaveProfile.IsBossWave && wave >= FinalBossWave)
         {
             FinishMatch(true);
@@ -785,16 +920,149 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
         ClearCombat();
         feedText.text = victory ? "Arena conquered." : "Squad wiped. The arena keeps the scrap.";
 
-        GameObject panel = AddPanel("Results", canvas.transform, new Vector2(0.5f, 0.5f), new Vector2(520f, 250f));
-        AddText("ResultTitle", panel.transform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -32f), 25, TextAnchor.UpperCenter, victory ? "VICTORY" : "DEFEAT");
-        int clearedWaves = victory ? wave : Mathf.Max(0, wave - 1);
-        AddText("ResultBody", panel.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0f, 10f), 17, TextAnchor.MiddleCenter, "Waves cleared: " + clearedWaves + "\nMutations drafted: " + playerAugments + "\nScrap banked: " + scrap);
-        AddButton("Back to Deck", panel.transform, new Vector2(0.5f, 0f), new Vector2(180f, 42f), new Vector2(0f, 32f), () =>
+        if (resultPanel != null)
         {
-            Destroy(panel);
-            ShowDeckBuilder();
-        });
+            Destroy(resultPanel);
+        }
+
+        resultPanel = AddPanel("Results", canvas.transform, new Vector2(0.5f, 0.5f), new Vector2(356f, victory ? 390f : 450f));
+        Text resultTitle = AddText("ResultTitle", resultPanel.transform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -30f), 25, TextAnchor.UpperCenter, victory ? "VICTORY" : "DEFEAT");
+        resultTitle.GetComponent<RectTransform>().sizeDelta = new Vector2(312f, 34f);
+        int clearedWaves = victory ? wave : Mathf.Max(0, wave - 1);
+        int savedScrap = CalculateSavedScrap(victory);
+        AlienSkillType resultSkill = PlayerAliens[Mathf.Clamp(selectedAlienIndex, 0, PlayerAliens.Length - 1)].SkillType;
+        string damageStyle = GetSkillResultLabel(resultSkill);
+        string dailyLine = dailyRunActive ? "\nDaily seed: " + GetDailySeed() : string.Empty;
+        Text resultBody = AddText("ResultBody", resultPanel.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0f, 18f), 16, TextAnchor.MiddleCenter, "Waves cleared: " + clearedWaves + "\nDamage style: " + damageStyle + "\nScrap earned: " + runEarnedScrap + "\nScrap saved: " + savedScrap + "\nBoss beaten: " + (victory ? "Yes" : "No") + dailyLine);
+        resultBody.GetComponent<RectTransform>().sizeDelta = new Vector2(312f, 174f);
+        bool canRevive = !victory && !reviveUsedThisRun && adService != null && adService.CanShowRewardedAd;
+        if (canRevive)
+        {
+            AddButton("Watch Ad Revive", resultPanel.transform, new Vector2(0.5f, 0f), new Vector2(312f, 52f), new Vector2(0f, 92f), () =>
+            {
+                adService.ShowRewardedAd(success =>
+                {
+                    if (!success)
+                    {
+                        feedText.text = "Ad was not completed.";
+                        return;
+                    }
+
+                    reviveUsedThisRun = true;
+                    playerStats.MaxHealth *= 1.4f;
+                    matchFinished = false;
+                    if (resultPanel != null)
+                    {
+                        Destroy(resultPanel);
+                    }
+                    feedText.text = "Revived. Current wave restarted.";
+                    BeginWave();
+                });
+            });
+            AddButton("Back to Deck", resultPanel.transform, new Vector2(0.5f, 0f), new Vector2(312f, 52f), new Vector2(0f, 30f), () =>
+            {
+                CommitRunProgress(victory);
+                Destroy(resultPanel);
+                ShowDeckBuilder();
+            });
+        }
+        else
+        {
+            AddButton("Back to Deck", resultPanel.transform, new Vector2(0.5f, 0f), new Vector2(312f, 52f), new Vector2(0f, 30f), () =>
+            {
+                CommitRunProgress(victory);
+                Destroy(resultPanel);
+                ShowDeckBuilder();
+            });
+        }
         UpdateStatus();
+    }
+
+    private void CommitRunProgress(bool victory)
+    {
+        if (runProgressCommitted)
+        {
+            return;
+        }
+
+        runProgressCommitted = true;
+        int clearedWaves = victory ? wave : Mathf.Max(0, wave - 1);
+        bankedScrap += CalculateSavedScrap(victory);
+        bestWave = Mathf.Max(bestWave, clearedWaves);
+        if (victory)
+        {
+            wins++;
+        }
+
+        SaveProgress();
+    }
+
+    private int CalculateSavedScrap(bool victory)
+    {
+        return victory ? runEarnedScrap : Mathf.FloorToInt(runEarnedScrap * 0.35f);
+    }
+
+    private void LoadProgress()
+    {
+        bankedScrap = Mathf.Max(0, PlayerPrefs.GetInt(PrefBankedScrap, 0));
+        bestWave = Mathf.Max(0, PlayerPrefs.GetInt(PrefBestWave, 0));
+        wins = Mathf.Max(0, PlayerPrefs.GetInt(PrefWins, 0));
+        selectedAlienIndex = Mathf.Clamp(PlayerPrefs.GetInt(PrefSelectedAlien, 0), 0, PlayerAliens.Length - 1);
+    }
+
+    private void SaveProgress()
+    {
+        PlayerPrefs.SetInt(PrefBankedScrap, Mathf.Max(0, bankedScrap));
+        PlayerPrefs.SetInt(PrefBestWave, Mathf.Max(0, bestWave));
+        PlayerPrefs.SetInt(PrefWins, Mathf.Max(0, wins));
+        PlayerPrefs.SetInt(PrefSelectedAlien, Mathf.Clamp(selectedAlienIndex, 0, PlayerAliens.Length - 1));
+        PlayerPrefs.Save();
+    }
+
+    private void RefreshDeckProgress()
+    {
+        if (deckProgressText != null)
+        {
+            deckProgressText.text = "Bank " + bankedScrap + "   Best " + bestWave + "   Wins " + wins;
+        }
+    }
+
+    private int GetDailySeed()
+    {
+        DateTime today = DateTime.UtcNow.Date;
+        return today.Year * 10000 + today.Month * 100 + today.Day;
+    }
+
+    private void ShowStore()
+    {
+        if (storePanel != null)
+        {
+            Destroy(storePanel);
+            storePanel = null;
+            return;
+        }
+
+        storePanel = AddPanel("Store", canvas.transform, new Vector2(0.5f, 0.5f), new Vector2(356f, 430f));
+        Text storeTitle = AddText("StoreTitle", storePanel.transform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -28f), 24, TextAnchor.UpperCenter, "SHOP");
+        storeTitle.GetComponent<RectTransform>().sizeDelta = new Vector2(312f, 34f);
+        AddStoreItem("Arena Banner", "Profile flair", -102f);
+        AddStoreItem("Starter Scrap", "+120 banked scrap", -190f);
+        AddStoreItem("Monthly Pass", "Bonus daily rewards", -278f);
+        AddButton("Close", storePanel.transform, new Vector2(0.5f, 0f), new Vector2(312f, 52f), new Vector2(0f, 30f), () =>
+        {
+            Destroy(storePanel);
+            storePanel = null;
+        });
+    }
+
+    private void AddStoreItem(string title, string body, float y)
+    {
+        Text itemText = AddText(title + "Text", storePanel.transform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(-58f, y), 15, TextAnchor.MiddleLeft, title + "\n" + body);
+        itemText.GetComponent<RectTransform>().sizeDelta = new Vector2(182f, 58f);
+        AddButton("Coming soon", storePanel.transform, new Vector2(0.5f, 1f), new Vector2(118f, 44f), new Vector2(104f, y), () =>
+        {
+            feedText.text = "Store payments are coming soon.";
+        });
     }
 
     private bool HasLivingTeam(int team)
@@ -867,6 +1135,10 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
 
     private void SetJumpButtonVisible(bool visible)
     {
+        if (combatControlsPanel != null)
+        {
+            combatControlsPanel.SetActive(visible);
+        }
         if (jumpButton != null)
         {
             jumpButton.gameObject.SetActive(visible);
@@ -953,9 +1225,8 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
         int enemyMaxHp = matchRunning ? Mathf.CeilToInt(TeamMaxHealth(1)) : -1;
         if (wave != cachedStatusWave || secondsRemaining != cachedStatusSeconds || radiusTenths != cachedStatusRadiusTenths || playerHp != cachedPlayerHp || enemyHp != cachedEnemyHp || profileTitle != cachedStatusProfileTitle)
         {
-            string profileLine = profileTitle.Length > 0 ? string.Format("\n{0}", profileTitle) : string.Empty;
             string nextStatus = matchRunning
-                ? string.Format("WAVE {0}   YOU {1}/{2} HP   {3}s   ENEMY {4}/{5} HP   RING {6:0.0}{7}", wave, playerHp, playerMaxHp, secondsRemaining, enemyHp, enemyMaxHp, radiusTenths * 0.1f, profileLine)
+                ? string.Format("W{0}  {1}s\nYOU {2}/{3}   ENEMY {4}/{5}", wave, secondsRemaining, playerHp, playerMaxHp, enemyHp, enemyMaxHp)
                 : string.Format("Wave {0}", wave);
             cachedStatusWave = wave;
             cachedStatusSeconds = secondsRemaining;
@@ -967,8 +1238,7 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
             statusText.text = nextStatus;
         }
 
-        string enemyLine = currentWaveProfile != null ? string.Format("\nEnemy {0}", currentWaveProfile.ShortLabel) : string.Empty;
-        string nextResource = string.Format("Scrap {0}\nRerolls {1}\nMutations {2}{3}", scrap, rerolls, playerAugments, enemyLine);
+        string nextResource = string.Format("Scrap {0}\nBank {1}", scrap, bankedScrap);
         if (nextResource != cachedResourceValue)
         {
             cachedResourceValue = nextResource;
@@ -1096,8 +1366,9 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
             case FighterPose.Run:
                 return "_run_";
             case FighterPose.Fire:
-            case FighterPose.Idle:
                 return "_fire_";
+            case FighterPose.Idle:
+                return "_idle_";
             case FighterPose.Punch:
                 return "_attack_";
             case FighterPose.Jump:
@@ -1226,8 +1497,8 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
         LineRenderer line = go.AddComponent<LineRenderer>();
         line.useWorldSpace = true;
         line.positionCount = 2;
-        line.startWidth = 0.08f;
-        line.endWidth = 0.02f;
+        line.startWidth = 0.16f;
+        line.endWidth = 0.045f;
         line.material = GetArenaLineMaterial();
         line.sortingOrder = 7;
         Beam beam = go.AddComponent<Beam>();
@@ -1359,10 +1630,11 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
         Dead
     }
 
-    internal enum AttackMode
+    internal enum AlienSkillType
     {
-        Projectile,
-        EyeLaser
+        Gun,
+        EyeLaser,
+        Punch
     }
 
     private sealed class AlienDefinition
@@ -1370,12 +1642,24 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
         public readonly string Skin;
         public readonly string Name;
         public readonly string Role;
+        public readonly AlienSkillType SkillType;
+        public readonly string SkillLabel;
+        public readonly string SkillDescription;
+        public readonly int BuildIndex;
+        public readonly string BuildLabel;
+        public readonly string BuildDescription;
 
-        public AlienDefinition(string skin, string name, string role)
+        public AlienDefinition(string skin, string name, string role, AlienSkillType skillType, string skillLabel, string skillDescription, int buildIndex, string buildLabel, string buildDescription)
         {
             Skin = skin;
             Name = name;
             Role = role;
+            SkillType = skillType;
+            SkillLabel = skillLabel;
+            SkillDescription = skillDescription;
+            BuildIndex = buildIndex;
+            BuildLabel = buildLabel;
+            BuildDescription = buildDescription;
         }
     }
 
@@ -1524,14 +1808,13 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
         private string skin;
         private Color baseTint;
         private Vector3 baseScale;
-        private AttackMode attackMode;
+        private AlienSkillType skillType;
         private float fireCooldown;
         private float localTime;
         private float hitFlash;
         private float poseLockTimer;
         private float maxHealth;
         private float animationTimer;
-        private float skillCooldown;
         private float jumpTimer;
         private float jumpCooldown;
         private float jumpStartX;
@@ -1557,13 +1840,13 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
             spriteRenderer = renderer;
         }
 
-        public void Init(SpaceArenaBootstrap owner, int team, string alienSkin, TeamStats teamStats, int squadSlot, AttackMode selectedMode)
+        public void Init(SpaceArenaBootstrap owner, int team, string alienSkin, TeamStats teamStats, int squadSlot, AlienSkillType selectedSkill)
         {
             arena = owner;
             Team = team;
             skin = alienSkin;
             stats = teamStats;
-            attackMode = selectedMode;
+            skillType = selectedSkill;
             baseTint = team == 0 ? Color.Lerp(stats.SpriteTint, new Color(0.2f, 0.95f, 1f), 0.22f) : stats.SpriteTint;
             maxHealth = Mathf.Max(20f, stats.MaxHealth + stats.HealOnWave);
             Health = maxHealth;
@@ -1574,7 +1857,6 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
             animationTimer = 0f;
             animationFrame = 0;
             fireCooldown = UnityEngine.Random.Range(0.1f, 0.7f);
-            skillCooldown = UnityEngine.Random.Range(2.6f, 4.2f);
             jumpTimer = 0f;
             jumpCooldown = 0f;
             jumpStartX = transform.position.x;
@@ -1594,7 +1876,6 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
         {
             localTime += dt;
             fireCooldown -= dt;
-            skillCooldown -= dt;
             jumpCooldown -= dt;
             hitFlash -= dt;
             poseLockTimer -= dt;
@@ -1612,8 +1893,8 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
 
             float deltaX = target.transform.position.x - transform.position.x;
             float distance = Mathf.Abs(deltaX);
-            Vector3 desired = new Vector3(Mathf.Sign(Mathf.Approximately(deltaX, 0f) ? (Team == 0 ? 1f : -1f) : deltaX), 0f, 0f);
-            bool charging = localTime <= stats.ChargeDuration && distance > MinFighterDistance * 1.6f;
+            float attackRange = GetAttackRange();
+            bool charging = localTime <= stats.ChargeDuration && distance > Mathf.Max(MinFighterDistance * 1.6f, attackRange * 0.82f);
             float speed = stats.MoveSpeed * (charging ? 1.85f : 1f);
 
             if (!airborne)
@@ -1632,17 +1913,17 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
             spriteRenderer.color = hitFlash > 0f ? new Color(1f, 0.45f, 0.45f) : baseTint;
             if (poseLockTimer <= 0f)
             {
-                SetPose(distance > stats.Range * 0.65f || charging ? FighterPose.Run : FighterPose.Idle);
+                SetPose(distance > attackRange * 0.72f || charging ? FighterPose.Run : FighterPose.Idle);
             }
             AdvanceAnimation(dt);
-            AnimateBody(charging || distance > stats.Range * 0.65f);
+            AnimateBody(charging || distance > attackRange * 0.72f);
             UpdateCombatReadouts();
 
-            if (Team == 1 && jumpTimer <= 0f && jumpCooldown <= 0f && distance > MinFighterDistance * 0.95f && distance < stats.Range * 0.95f && UnityEngine.Random.value < EnemyJumpChancePerSecond * dt)
+            if (Team == 1 && jumpTimer <= 0f && jumpCooldown <= 0f && distance > MinFighterDistance * 0.95f && distance < attackRange * 0.95f && UnityEngine.Random.value < EnemyJumpChancePerSecond * dt)
             {
                 RequestJump(target);
             }
-            else if (!airborne && IsTargetAhead(target) && distance <= stats.Range && fireCooldown <= 0f)
+            else if (!airborne && IsTargetAhead(target) && distance <= attackRange && fireCooldown <= 0f)
             {
                 FireAt(target, allFighters);
             }
@@ -1725,62 +2006,59 @@ public sealed class SpaceArenaBootstrap : MonoBehaviour
         {
             fireCooldown = 1f / Mathf.Max(0.25f, stats.FireRate);
             poseLockTimer = FirePoseHold;
-            SetPose(FighterPose.Punch);
 
             Vector3 direction = new Vector3(facingSign, 0f, 0f);
             Color color = Team == 0 ? new Color(0.25f, 0.95f, 1f, 0.95f) : new Color(1f, 0.25f, 0.38f, 0.95f);
-            if (attackMode == AttackMode.EyeLaser)
+            if (skillType == AlienSkillType.EyeLaser)
             {
-                arena.SpawnEyeLaser(transform.position, facingSign, Team, stats.Damage * 0.82f, color, allFighters);
+                SetPose(FighterPose.Fire);
+                arena.SpawnEyeLaser(GetMuzzlePosition(0.42f), facingSign, Team, stats.Damage * 0.82f, color, allFighters);
                 return;
             }
 
+            if (skillType == AlienSkillType.Punch)
+            {
+                SetPose(FighterPose.Punch);
+                target.TakeDamage(stats.Damage * 1.18f, this);
+                target.ApplyKnockback(facingSign * 0.26f);
+                arena.SpawnImpactFlash(target.transform.position, Team == 0 ? new Color(1f, 0.78f, 0.24f, 0.95f) : new Color(1f, 0.35f, 0.24f, 0.95f));
+                return;
+            }
+
+            SetPose(FighterPose.Fire);
             int count = Mathf.Clamp(stats.ProjectileCount, 1, 5);
+            Vector3 muzzle = GetMuzzlePosition(0.28f);
             for (int i = 0; i < count; i++)
             {
                 float angle = count == 1 ? 0f : Mathf.Lerp(-12f, 12f, i / (float)(count - 1));
                 Vector3 shotDirection = Quaternion.Euler(0f, 0f, angle) * direction;
-                arena.SpawnProjectile(transform.position + shotDirection * 0.45f, shotDirection, Team, stats.Damage, stats.ProjectileSpeed, 0.22f, color);
+                arena.SpawnProjectile(muzzle + shotDirection * 0.18f, shotDirection, Team, stats.Damage, stats.ProjectileSpeed, 0.22f, color);
             }
         }
 
-        private void UseSkill(Fighter target, Vector3 desired, float distance)
+        private Vector3 GetMuzzlePosition(float height)
         {
-            skillCooldown = Mathf.Lerp(6.2f, 8.4f, UnityEngine.Random.value);
-            poseLockTimer = SkillPoseHold;
-            SetPose(FighterPose.Punch);
+            return transform.position + new Vector3(facingSign * 0.52f, height, -0.02f);
+        }
 
-            if (skin == "armor")
+        private float GetAttackRange()
+        {
+            if (skillType == AlienSkillType.Punch)
             {
-                Health = Mathf.Min(maxHealth, Health + 8f);
-                if (distance <= stats.Range * 0.8f)
-                {
-                    target.TakeDamage(stats.Damage * 0.45f, this);
-                }
-                return;
+                return PunchRange;
             }
-
-            if (skin == "red" || skin == "blue")
+            if (skillType == AlienSkillType.EyeLaser)
             {
-                float rushDistance = Mathf.Max(0f, distance - MinFighterDistance * 1.35f);
-                float wallLimit = StartSafeRadius - LaneWallPadding;
-                float rushX = transform.position.x + facingSign * Mathf.Min(1.15f, rushDistance);
-                rushX = Mathf.Clamp(ApplyBodyBlock(rushX, wallLimit, target), -wallLimit, wallLimit);
-                transform.position = new Vector3(rushX, transform.position.y, transform.position.z);
-                target.TakeDamage(stats.Damage * (skin == "red" ? 0.85f : 0.7f), this);
-                return;
+                return stats.Range * 1.25f;
             }
+            return stats.Range;
+        }
 
-            if (skin == "green" || skin == "darkgray")
-            {
-                target.TakeDamage(stats.Damage * 0.55f, this);
-                Health = Mathf.Min(maxHealth, Health + stats.Damage * 0.16f);
-                return;
-            }
-
-            Color skillColor = Team == 0 ? new Color(0.55f, 1f, 0.95f, 0.95f) : new Color(1f, 0.55f, 0.2f, 0.95f);
-            Vector3 skillDirection = new Vector3(facingSign, 0f, 0f);
-            arena.SpawnProjectile(transform.position + skillDirection * 0.45f, skillDirection, Team, stats.Damage * 1.05f, stats.ProjectileSpeed * 1.25f, 0.32f, skillColor);
+        public void ApplyKnockback(float amount)
+        {
+            float wallLimit = StartSafeRadius - LaneWallPadding;
+            float x = Mathf.Clamp(transform.position.x + amount, -wallLimit, wallLimit);
+            transform.position = new Vector3(x, transform.position.y, transform.position.z);
         }
 
         private void SetPose(FighterPose pose)

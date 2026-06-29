@@ -8,6 +8,7 @@ using UnityEngine;
 public static class SpaceArenaBuild
 {
     private const string ScenePath = "Assets/Scenes/SpaceArena.unity";
+    private const string WebGLTemplate = "PROJECT:SpaceArenaMobile";
 
     [MenuItem("Space Arena/Create Or Refresh Scene")]
     public static void CreateOrRefreshScene()
@@ -26,6 +27,7 @@ public static class SpaceArenaBuild
     public static void BuildWebGL()
     {
         CreateOrRefreshScene();
+        PlayerSettings.WebGL.template = WebGLTemplate;
         BuildPlayerOptions options = new BuildPlayerOptions
         {
             scenes = new[] { ScenePath },
